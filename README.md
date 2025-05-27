@@ -1,13 +1,5 @@
 # Chatbot-
-I've created a comprehensive AI chatbot application in Python for you! Here's what this chatbot includes:
-🌟 Key Features:
-Core Functionality:
-
-Intelligent conversation handling with pattern recognition
-Persistent data storage using SQLite database
-Learning capability - you can add new knowledge
-Session management with unique session IDs
-Conversation history tracking
+This project is a GUI-based chatbot developed in Python that interacts with users through natural language. It leverages the OpenAI API to generate intelligent, human-like responses based on user input. The chatbot is designed to simulate real conversations and can be used for general Q&A, casual chat, or customized tasks.
 
 User Interface:
 
