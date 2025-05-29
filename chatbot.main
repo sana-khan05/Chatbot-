@@ -1,0 +1,612 @@
+# AI Chatbot Application
+# Complete chatbot with conversation handling, data storage, and GUI
+
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+import json
+import datetime
+import random
+import re
+import sqlite3
+import threading
+from typing import Dict, List, Tuple
+import os
+
+class ChatbotDatabase:
+    """Handles all database operations for the chatbot"""
+    
+    def __init__(self, db_name="chatbot.db"):
+        self.db_name = db_name
+        self.init_database()
+    
+    def init_database(self):
+        """Initialize the database with required tables"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        # Conversations table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_message TEXT NOT NULL,
+                bot_response TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                session_id TEXT
+            )
+        ''')
+        
+        # User preferences table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                setting_name TEXT UNIQUE,
+                setting_value TEXT
+            )
+        ''')
+        
+        # Knowledge base table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS knowledge_base (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                category TEXT,
+                confidence REAL DEFAULT 1.0
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        self.populate_default_knowledge()
+    
+    def populate_default_knowledge(self):
+        """Add default knowledge to the database"""
+        default_knowledge = [
+            ("hello", "Hello! How can I help you today?", "greetings", 1.0),
+            ("hi", "Hi there! What can I do for you?", "greetings", 1.0),
+            ("how are you", "I'm doing great, thank you for asking! How are you?", "greetings", 1.0),
+            ("what is your name", "I'm your AI assistant chatbot. You can call me ChatBot!", "identity", 1.0),
+            ("who are you", "I'm an AI chatbot designed to help and chat with you!", "identity", 1.0),
+            ("what can you do", "I can chat with you, answer questions, help with basic tasks, and learn from our conversations!", "capabilities", 1.0),
+            ("goodbye", "Goodbye! Have a great day!", "farewell", 1.0),
+            ("bye", "See you later! Take care!", "farewell", 1.0),
+            ("thank you", "You're welcome! Happy to help!", "gratitude", 1.0),
+            ("thanks", "My pleasure! Anything else I can help with?", "gratitude", 1.0),
+            ("what is python", "Python is a high-level programming language known for its simplicity and readability.", "programming", 0.9),
+            ("what is ai", "AI (Artificial Intelligence) refers to computer systems that can perform tasks typically requiring human intelligence.", "technology", 0.9),
+            ("weather", "I don't have access to real-time weather data, but I'd recommend checking a weather app or website!", "information", 0.8),
+            ("time", "I don't have access to real-time data, but you can check the time on your device!", "information", 0.8)
+        ]
+        
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        for question, answer, category, confidence in default_knowledge:
+            cursor.execute('''
+                INSERT OR IGNORE INTO knowledge_base (question, answer, category, confidence)
+                VALUES (?, ?, ?, ?)
+            ''', (question, answer, category, confidence))
+        
+        conn.commit()
+        conn.close()
+    
+    def save_conversation(self, user_message: str, bot_response: str, session_id: str):
+        """Save a conversation to the database"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO conversations (user_message, bot_response, session_id)
+            VALUES (?, ?, ?)
+        ''', (user_message, bot_response, session_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_conversation_history(self, session_id: str = None, limit: int = 50) -> List[Tuple]:
+        """Retrieve conversation history"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        if session_id:
+            cursor.execute('''
+                SELECT user_message, bot_response, timestamp 
+                FROM conversations 
+                WHERE session_id = ?
+                ORDER BY timestamp DESC LIMIT ?
+            ''', (session_id, limit))
+        else:
+            cursor.execute('''
+                SELECT user_message, bot_response, timestamp 
+                FROM conversations 
+                ORDER BY timestamp DESC LIMIT ?
+            ''', (limit,))
+        
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    
+    def search_knowledge_base(self, query: str) -> List[Tuple]:
+        """Search the knowledge base for relevant responses"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        # Search for exact matches first, then partial matches
+        cursor.execute('''
+            SELECT question, answer, confidence 
+            FROM knowledge_base 
+            WHERE question LIKE ? OR answer LIKE ?
+            ORDER BY confidence DESC
+        ''', (f"%{query.lower()}%", f"%{query.lower()}%"))
+        
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    
+    def add_knowledge(self, question: str, answer: str, category: str = "user_added"):
+        """Add new knowledge to the database"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO knowledge_base (question, answer, category, confidence)
+            VALUES (?, ?, ?, ?)
+        ''', (question.lower(), answer, category, 0.8))
+        
+        conn.commit()
+        conn.close()
+
+class ChatbotBrain:
+    """Core chatbot logic and response generation"""
+    
+    def __init__(self, database: ChatbotDatabase):
+        self.db = database
+        self.session_id = self.generate_session_id()
+        self.conversation_context = []
+        self.user_name = None
+        
+        # Response patterns for different types of inputs
+        self.patterns = {
+            'question': [
+                r'\b(what|how|why|when|where|who)\b',
+                r'\?'
+            ],
+            'greeting': [
+                r'\b(hello|hi|hey|greetings)\b'
+            ],
+            'farewell': [
+                r'\b(bye|goodbye|see you|farewell)\b'
+            ],
+            'name_request': [
+                r'\b(my name is|i am|call me)\s+(\w+)\b'
+            ],
+            'gratitude': [
+                r'\b(thank|thanks|appreciate)\b'
+            ]
+        }
+    
+    def generate_session_id(self) -> str:
+        """Generate a unique session ID"""
+        return f"session_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{random.randint(1000, 9999)}"
+    
+    def classify_input(self, user_input: str) -> str:
+        """Classify the type of user input"""
+        user_input_lower = user_input.lower()
+        
+        for pattern_type, patterns in self.patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, user_input_lower):
+                    return pattern_type
+        
+        return 'general'
+    
+    def extract_name(self, user_input: str) -> str:
+        """Extract name from user input"""
+        match = re.search(r'\b(my name is|i am|call me)\s+(\w+)\b', user_input.lower())
+        if match:
+            return match.group(2).capitalize()
+        return None
+    
+    def generate_response(self, user_input: str) -> str:
+        """Generate appropriate response based on user input"""
+        if not user_input.strip():
+            return "I didn't catch that. Could you please say something?"
+        
+        # Check for name introduction
+        name = self.extract_name(user_input)
+        if name:
+            self.user_name = name
+            return f"Nice to meet you, {name}! How can I help you today?"
+        
+        # Search knowledge base first
+        knowledge_results = self.db.search_knowledge_base(user_input)
+        if knowledge_results:
+            # Return the highest confidence match
+            best_match = knowledge_results[0]
+            response = best_match[1]
+            
+            # Personalize if we know the user's name
+            if self.user_name and random.random() > 0.7:
+                response = f"{response} Is there anything else I can help with, {self.user_name}?"
+            
+            return response
+        
+        # Classify input and generate contextual response
+        input_type = self.classify_input(user_input)
+        
+        if input_type == 'question':
+            return self.handle_question(user_input)
+        elif input_type == 'greeting':
+            return self.handle_greeting()
+        elif input_type == 'farewell':
+            return self.handle_farewell()
+        elif input_type == 'gratitude':
+            return self.handle_gratitude()
+        else:
+            return self.handle_general(user_input)
+    
+    def handle_question(self, question: str) -> str:
+        """Handle question-type inputs"""
+        responses = [
+            "That's an interesting question! I don't have specific information about that right now, but I'm always learning.",
+            "I wish I knew more about that topic. Could you tell me more so I can learn?",
+            "That's a great question! Unfortunately, I don't have enough information to give you a complete answer.",
+            "I'd love to help answer that, but I might need more context. Can you provide more details?"
+        ]
+        return random.choice(responses)
+    
+    def handle_greeting(self) -> str:
+        """Handle greeting inputs"""
+        greetings = [
+            "Hello! Great to see you!",
+            "Hi there! How's your day going?",
+            "Hey! What brings you here today?",
+            "Greetings! Ready to chat?"
+        ]
+        
+        if self.user_name:
+            greetings.extend([
+                f"Hello {self.user_name}! Good to see you again!",
+                f"Hi {self.user_name}! How can I help you today?"
+            ])
+        
+        return random.choice(greetings)
+    
+    def handle_farewell(self) -> str:
+        """Handle farewell inputs"""
+        farewells = [
+            "Goodbye! It was great chatting with you!",
+            "See you later! Have a wonderful day!",
+            "Take care! Feel free to come back anytime!",
+            "Bye! Hope to chat with you again soon!"
+        ]
+        
+        if self.user_name:
+            farewells.extend([
+                f"Goodbye {self.user_name}! Take care!",
+                f"See you later {self.user_name}! Have a great day!"
+            ])
+        
+        return random.choice(farewells)
+    
+    def handle_gratitude(self) -> str:
+        """Handle thank you messages"""
+        responses = [
+            "You're very welcome!",
+            "Happy to help!",
+            "My pleasure!",
+            "Anytime!",
+            "Glad I could assist!"
+        ]
+        return random.choice(responses)
+    
+    def handle_general(self, user_input: str) -> str:
+        """Handle general conversation"""
+        responses = [
+            "That's interesting! Tell me more about that.",
+            "I see! What else would you like to talk about?",
+            "Fascinating! I'm always eager to learn new things.",
+            "Thanks for sharing that with me! What's on your mind?",
+            "I appreciate you telling me that. What else can we discuss?"
+        ]
+        return random.choice(responses)
+    
+    def process_message(self, user_input: str) -> str:
+        """Process user message and return response"""
+        response = self.generate_response(user_input)
+        
+        # Save conversation to database
+        self.db.save_conversation(user_input, response, self.session_id)
+        
+        # Update conversation context
+        self.conversation_context.append({
+            'user': user_input,
+            'bot': response,
+            'timestamp': datetime.datetime.now()
+        })
+        
+        # Keep only last 10 exchanges in memory
+        if len(self.conversation_context) > 10:
+            self.conversation_context = self.conversation_context[-10:]
+        
+        return response
+
+class ChatbotGUI:
+    """Graphical user interface for the chatbot"""
+    
+    def __init__(self):
+        self.db = ChatbotDatabase()
+        self.brain = ChatbotBrain(self.db)
+        
+        self.root = tk.Tk()
+        self.root.title("AI Chatbot Assistant")
+        self.root.geometry("800x600")
+        self.root.configure(bg="#f0f0f0")
+        
+        self.setup_gui()
+        self.setup_styles()
+        
+    def setup_styles(self):
+        """Setup custom styles for the GUI"""
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Configure custom styles
+        style.configure('Title.TLabel', 
+                       font=('Arial', 16, 'bold'),
+                       background="#f0f0f0",
+                       foreground="#333333")
+        
+        style.configure('Send.TButton',
+                       font=('Arial', 10, 'bold'),
+                       padding=10)
+    
+    def setup_gui(self):
+        """Setup the main GUI components"""
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Configure grid weights
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="🤖 AI Chatbot Assistant", style='Title.TLabel')
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 10))
+        
+        # Chat display area
+        self.chat_display = scrolledtext.ScrolledText(
+            main_frame,
+            wrap=tk.WORD,
+            width=70,
+            height=25,
+            font=('Arial', 10),
+            bg="#ffffff",
+            fg="#333333",
+            state=tk.DISABLED
+        )
+        self.chat_display.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        
+        # Input frame
+        input_frame = ttk.Frame(main_frame)
+        input_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        input_frame.columnconfigure(0, weight=1)
+        
+        # Message input
+        self.message_entry = ttk.Entry(
+            input_frame,
+            font=('Arial', 10),
+            width=50
+        )
+        self.message_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 10))
+        self.message_entry.bind('<Return>', self.send_message)
+        
+        # Send button
+        self.send_button = ttk.Button(
+            input_frame,
+            text="Send",
+            command=self.send_message,
+            style='Send.TButton'
+        )
+        self.send_button.grid(row=0, column=1)
+        
+        # Control buttons frame
+        control_frame = ttk.Frame(main_frame)
+        control_frame.grid(row=3, column=0, columnspan=3, pady=(10, 0))
+        
+        # Control buttons
+        ttk.Button(control_frame, text="Clear Chat", command=self.clear_chat).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(control_frame, text="View History", command=self.view_history).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(control_frame, text="Add Knowledge", command=self.add_knowledge_dialog).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(control_frame, text="Settings", command=self.show_settings).pack(side=tk.LEFT)
+        
+        # Status bar
+        self.status_var = tk.StringVar()
+        self.status_var.set("Ready to chat!")
+        status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
+        
+        # Welcome message
+        self.display_message("Chatbot", "Hello! I'm your AI assistant. How can I help you today?")
+        
+        # Focus on input
+        self.message_entry.focus()
+    
+    def send_message(self, event=None):
+        """Send user message and get bot response"""
+        user_message = self.message_entry.get().strip()
+        if not user_message:
+            return
+        
+        # Clear input
+        self.message_entry.delete(0, tk.END)
+        
+        # Display user message
+        self.display_message("You", user_message)
+        
+        # Show typing indicator
+        self.status_var.set("Chatbot is typing...")
+        self.root.update()
+        
+        # Get bot response (simulate thinking delay)
+        def get_response():
+            response = self.brain.process_message(user_message)
+            self.root.after(0, lambda: self.show_response(response))
+        
+        threading.Thread(target=get_response, daemon=True).start()
+    
+    def show_response(self, response):
+        """Display bot response"""
+        self.display_message("Chatbot", response)
+        self.status_var.set("Ready to chat!")
+        self.message_entry.focus()
+    
+    def display_message(self, sender, message):
+        """Display a message in the chat area"""
+        self.chat_display.config(state=tk.NORMAL)
+        
+        # Add timestamp
+        timestamp = datetime.datetime.now().strftime("%H:%M")
+        
+        # Format message
+        if sender == "You":
+            self.chat_display.insert(tk.END, f"[{timestamp}] You: ", "user_tag")
+            self.chat_display.insert(tk.END, f"{message}\n\n", "user_message")
+        else:
+            self.chat_display.insert(tk.END, f"[{timestamp}] 🤖 Chatbot: ", "bot_tag")
+            self.chat_display.insert(tk.END, f"{message}\n\n", "bot_message")
+        
+        # Configure text tags
+        self.chat_display.tag_configure("user_tag", foreground="#0066cc", font=('Arial', 10, 'bold'))
+        self.chat_display.tag_configure("user_message", foreground="#333333")
+        self.chat_display.tag_configure("bot_tag", foreground="#009900", font=('Arial', 10, 'bold'))
+        self.chat_display.tag_configure("bot_message", foreground="#333333")
+        
+        self.chat_display.config(state=tk.DISABLED)
+        self.chat_display.see(tk.END)
+    
+    def clear_chat(self):
+        """Clear the chat display"""
+        self.chat_display.config(state=tk.NORMAL)
+        self.chat_display.delete(1.0, tk.END)
+        self.chat_display.config(state=tk.DISABLED)
+        self.display_message("Chatbot", "Chat cleared! How can I help you?")
+    
+    def view_history(self):
+        """Show conversation history window"""
+        history_window = tk.Toplevel(self.root)
+        history_window.title("Conversation History")
+        history_window.geometry("600x400")
+        
+        # History display
+        history_text = scrolledtext.ScrolledText(history_window, wrap=tk.WORD, font=('Arial', 9))
+        history_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Get history from database
+        history = self.db.get_conversation_history(limit=100)
+        
+        if history:
+            for user_msg, bot_resp, timestamp in reversed(history):
+                history_text.insert(tk.END, f"[{timestamp}] You: {user_msg}\n")
+                history_text.insert(tk.END, f"[{timestamp}] Bot: {bot_resp}\n\n")
+        else:
+            history_text.insert(tk.END, "No conversation history found.")
+        
+        history_text.config(state=tk.DISABLED)
+    
+    def add_knowledge_dialog(self):
+        """Show dialog to add new knowledge"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Knowledge")
+        dialog.geometry("400x300")
+        dialog.resizable(False, False)
+        
+        # Center the dialog
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Question input
+        ttk.Label(dialog, text="Question/Trigger:").pack(pady=(10, 5))
+        question_entry = tk.Text(dialog, height=3, width=45)
+        question_entry.pack(pady=(0, 10), padx=10)
+        
+        # Answer input
+        ttk.Label(dialog, text="Answer/Response:").pack(pady=(10, 5))
+        answer_entry = tk.Text(dialog, height=6, width=45)
+        answer_entry.pack(pady=(0, 10), padx=10)
+        
+        # Category input
+        ttk.Label(dialog, text="Category (optional):").pack(pady=(10, 5))
+        category_entry = ttk.Entry(dialog, width=30)
+        category_entry.pack(pady=(0, 10))
+        category_entry.insert(0, "user_added")
+        
+        # Buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        
+        def save_knowledge():
+            question = question_entry.get(1.0, tk.END).strip()
+            answer = answer_entry.get(1.0, tk.END).strip()
+            category = category_entry.get().strip() or "user_added"
+            
+            if question and answer:
+                self.db.add_knowledge(question, answer, category)
+                messagebox.showinfo("Success", "Knowledge added successfully!")
+                dialog.destroy()
+            else:
+                messagebox.showerror("Error", "Please fill in both question and answer fields.")
+        
+        ttk.Button(button_frame, text="Save", command=save_knowledge).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
+    
+    def show_settings(self):
+        """Show settings window"""
+        settings_window = tk.Toplevel(self.root)
+        settings_window.title("Settings")
+        settings_window.geometry("300x200")
+        settings_window.resizable(False, False)
+        
+        # Settings content
+        ttk.Label(settings_window, text="Chatbot Settings", font=('Arial', 12, 'bold')).pack(pady=10)
+        
+        # Session info
+        session_frame = ttk.LabelFrame(settings_window, text="Session Information")
+        session_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(session_frame, text=f"Session ID: {self.brain.session_id}").pack(anchor=tk.W, padx=5, pady=2)
+        if self.brain.user_name:
+            ttk.Label(session_frame, text=f"User Name: {self.brain.user_name}").pack(anchor=tk.W, padx=5, pady=2)
+        
+        # Database info
+        db_frame = ttk.LabelFrame(settings_window, text="Database")
+        db_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(db_frame, text=f"Database: {self.db.db_name}").pack(anchor=tk.W, padx=5, pady=2)
+        
+        # Close button
+        ttk.Button(settings_window, text="Close", command=settings_window.destroy).pack(pady=10)
+    
+    def run(self):
+        """Start the chatbot application"""
+        try:
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            print("\nChatbot application closed.")
+
+def main():
+    """Main function to run the chatbot application"""
+    print("Starting AI Chatbot Application...")
+    
+    try:
+        app = ChatbotGUI()
+        app.run()
+    except Exception as e:
+        print(f"Error starting chatbot: {e}")
+        input("Press Enter to exit...")
+
+if __name__ == "__main__":
+    main()
