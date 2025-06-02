@@ -1,50 +1,53 @@
-# Chatbot-
-This project is a GUI-based chatbot developed in Python that interacts with users through natural language. It leverages the OpenAI API to generate intelligent, human-like responses based on user input. The chatbot is designed to simulate real conversations and can be used for general Q&A, casual chat, or customized tasks.
+# Chatbot Application
 
-User Interface:
+This project is an AI chatbot application that provides a graphical user interface for user interactions. The chatbot is capable of responding to user queries, maintaining conversation context, and learning from interactions.
 
-Modern GUI built with Tkinter
-Real-time chat interface with timestamps
-Message history viewer
-Knowledge addition dialog
-Settings panel
+## Project Structure
 
-Database Components:
+```
+chatbot-app
+├── src
+│   ├── __init__.py
+│   ├── gui.py          # Contains the ChatbotGUI class for the user interface
+│   ├── brain.py        # Contains the ChatbotBrain class for chatbot logic
+│   ├── database.py     # Contains the ChatbotDatabase class for data management
+│   └── main.py         # Entry point for the application
+├── requirements.txt     # Lists the dependencies for the project
+└── README.md            # Documentation for the project
+```
 
-Conversations table - stores all chat history
-Knowledge base - stores questions and answers
-User preferences - for customization
-Pre-loaded knowledge - common greetings, questions, etc.
+## Installation
 
-Smart Features:
+1. Clone the repository:
+   ```
+   git clone https://github.com/yourusername/chatbot-app.git
+   cd chatbot-app
+   ```
 
-Name recognition - remembers your name
-Context awareness - maintains conversation flow
-Pattern matching - recognizes different types of inputs
-Confidence scoring - for knowledge base responses
-Threading - non-blocking response generation
+2. Install the required dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
-🚀 How to Run:
+## Usage
 
-Save the code as chatbot.py
-Install Python (3.7 or higher)
-Run the application:
-bashpython chatbot.py
+To run the chatbot application, execute the following command:
+```
+python src/main.py
+```
 
+## Features
 
-📋 Required Libraries:
-All libraries used are part of Python's standard library:
+- User-friendly graphical interface for chatting with the bot.
+- Ability to add new knowledge to the chatbot.
+- Conversation history tracking.
+- Customizable settings.
 
-tkinter - GUI framework
-sqlite3 - Database management
-json, datetime, random, re - Utilities
-threading - Background processing
+## Contributing
 
-🎯 Usage Instructions:
+Contributions are welcome! Please feel free to submit a pull request or open an issue for any suggestions or improvements.
 
-Start chatting - Type messages in the input box
-Add knowledge - Use "Add Knowledge" button to teach the bot
-View history - See all previous conversations
-Clear chat - Reset the current chat display
-Settings - View session and database information
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
 
